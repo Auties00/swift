@@ -30,7 +30,7 @@ jobs:
           df -h
           root_free=$(df --output=avail -B1G / | tail -1)
           mnt_free=$(df --output=avail -B1G /mnt 2>/dev/null | tail -1 || echo 0)
-          if [ "${mnt_free:-0}" -gt "$root_free" ]; then work=/mnt/work; else work=$HOME/work; fi
+          if [ "${mnt_free:-0}" -gt "$root_free" ]; then work=/mnt/swift-build; else work=$HOME/swift-build; fi
           sudo mkdir -p "$work" && sudo chown "$USER" "$work"
           echo "WORK=$work" >> "$GITHUB_ENV"
           echo "SCCACHE_DIR=$work/sccache" >> "$GITHUB_ENV"
