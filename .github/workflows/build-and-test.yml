@@ -59,8 +59,15 @@ jobs:
           swift --version
           git clone --filter=blob:none --branch "$SWIFT_REF" "https://github.com/$SWIFT_REPO.git" swift
           git -C swift log -1 --format='Testing %H (%cd): %s'
-          # Check out the other repositories at the commits matching the swift commit's date.
+          # Check out the other repositories at the commits matching the date of the branch's base on
+          # upstream main, so that the dependencies don't depend on when the branch's commits were made.
+          git -C swift fetch --filter=blob:none https://github.com/swiftlang/swift.git main
+          base=$(git -C swift merge-base HEAD FETCH_HEAD)
+          git -C swift log -1 --format='Base %H (%cd): %s' "$base"
+          git -C swift checkout -q --detach "$base"
           swift/utils/update-checkout --clone --partial-clone --skip-repository swift --match-timestamp --scheme main
+          git -C swift checkout -q -
+          git -C swift log -1 --format='Checked out %H'
           swift/utils/update-checkout --dump-hashes
 
       - name: Restore compile cache
