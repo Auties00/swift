@@ -1,0 +1,103 @@
+name: Build compiler and run lit tests
+
+# Builds a branch of the swift repo on Linux and runs a subset of the lit tests.
+# The build can take longer than the 6 hour job limit. The C/C++ compile cache is saved
+# even if the build step times out, so re-running the workflow continues where it stopped.
+
+on:
+  push:
+    branches: [ci]
+  workflow_dispatch:
+
+env:
+  SWIFT_REPO: Auties00/swift
+  SWIFT_REF: auties00/issue-91665
+  # Passed to lit's --filter (a regex over test paths).
+  LIT_FILTER: "SILOptimizer/"
+  HOST_SWIFT_VERSION: "6.2.4"
+  SCCACHE_VERSION: v0.17.0
+  SCCACHE_CACHE_SIZE: 7G
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - name: Free disk space and pick a work directory
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force > /dev/null || true
+          df -h
+          root_free=$(df --output=avail -B1G / | tail -1)
+          mnt_free=$(df --output=avail -B1G /mnt 2>/dev/null | tail -1 || echo 0)
+          if [ "${mnt_free:-0}" -gt "$root_free" ]; then work=/mnt/work; else work=$HOME/work; fi
+          sudo mkdir -p "$work" && sudo chown "$USER" "$work"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=$work/sccache" >> "$GITHUB_ENV"
+          echo "Using $work"; nproc; free -g
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install build-essential cmake git icu-devtools libc++-18-dev libc++abi-18-dev \
+            libcurl4-openssl-dev libedit-dev libicu-dev libncurses-dev libpython3-dev libsqlite3-dev \
+            libxml2-dev ninja-build pkg-config python3-six python3-pip python3-pkg-resources \
+            python3-psutil python3-setuptools rsync swig systemtap-sdt-dev tzdata uuid-dev zip
+
+      - name: Install host Swift toolchain and sccache
+        run: |
+          v=$HOST_SWIFT_VERSION
+          curl -fsSL "https://download.swift.org/swift-$v-release/ubuntu2404/swift-$v-RELEASE/swift-$v-RELEASE-ubuntu24.04.tar.gz" -o swift.tar.gz
+          mkdir -p "$WORK/host-swift" && tar -xzf swift.tar.gz -C "$WORK/host-swift" --strip-components=1 && rm swift.tar.gz
+          echo "$WORK/host-swift/usr/bin" >> "$GITHUB_PATH"
+          curl -fsSL "https://github.com/mozilla/sccache/releases/download/$SCCACHE_VERSION/sccache-$SCCACHE_VERSION-x86_64-unknown-linux-musl.tar.gz" -o sccache.tar.gz
+          tar -xzf sccache.tar.gz && sudo install -m 755 sccache-*/sccache /usr/local/bin/sccache && rm -rf sccache*
+
+      - name: Check out swift and its dependencies
+        working-directory: ${{ env.WORK }}
+        run: |
+          swift --version
+          git clone --filter=blob:none --branch "$SWIFT_REF" "https://github.com/$SWIFT_REPO.git" swift
+          git -C swift log -1 --format='Testing %H (%cd): %s'
+          # Check out the other repositories at the commits matching the swift commit's date.
+          swift/utils/update-checkout --clone --partial-clone --skip-repository swift --match-timestamp --scheme main
+          swift/utils/update-checkout --dump-hashes
+
+      - name: Restore compile cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: sccache-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: sccache-
+
+      - name: Build
+        id: build
+        working-directory: ${{ env.WORK }}
+        timeout-minutes: 320
+        run: |
+          swift/utils/build-script --release --assertions --no-swift-stdlib-assertions \
+            --build-subdir=ci --sccache --bootstrapping=hosttools \
+            --llvm-targets-to-build X86 --skip-build-benchmarks
+
+      - name: Save compile cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: sccache-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Run lit tests
+        if: steps.build.outcome == 'success'
+        working-directory: ${{ env.WORK }}
+        run: |
+          sccache --show-stats || true
+          llvm-project/llvm/utils/lit/lit.py -sv --xunit-xml-output=lit-results.xml \
+            --filter "$LIT_FILTER" build/ci/swift-linux-x86_64/test-linux-x86_64
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lit-results
+          path: ${{ env.WORK }}/lit-results.xml
+          if-no-files-found: ignore
