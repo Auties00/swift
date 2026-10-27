@@ -11,7 +11,7 @@ on:
 
 env:
   SWIFT_REPO: Auties00/swift
-  SWIFT_REF: auties00/issue-91665
+  SWIFT_REF: auties00/issue-91665-next
   # Passed to lit's --filter (a regex over test paths).
   LIT_FILTER: "SILOptimizer/"
   HOST_SWIFT_VERSION: "6.2.4"
